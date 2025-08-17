@@ -1,0 +1,17 @@
+{
+  "functions": {
+    "src/worker/index.ts": {
+      "runtime": "@vercel/edge"
+    }
+  },
+  "rewrites": [
+    {
+      "source": "/api/(.*)",
+      "destination": "/src/worker/index.ts"
+    },
+    {
+      "source": "/(.*)",
+      "destination": "/index.html"
+    }
+  ]
+}
