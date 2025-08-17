@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { cors } from "hono/cors";
 import { getCookie, setCookie } from "hono/cookie";
 import {
   exchangeCodeForSessionToken,
@@ -7,8 +8,24 @@ import {
   deleteSession,
   MOCHA_SESSION_TOKEN_COOKIE_NAME,
 } from "@getmocha/users-service/backend";
+import { zValidator } from "@hono/zod-validator";
+import { CreateHabitSchema, CreateHabitEntrySchema } from "@/shared/types";
 
-const app = new Hono<{ Bindings: Env }>();
+type Bindings = {
+  DB: D1Database;
+  MOCHA_USERS_SERVICE_API_KEY: string;
+  MOCHA_USERS_SERVICE_API_URL: string;
+};
+
+const app = new Hono<{ Bindings: Bindings }>();
+
+// Add CORS middleware
+app.use('/*', cors({
+  origin: ['http://localhost:5173', 'https://localhost:5173'],
+  allowHeaders: ['Content-Type', 'Authorization'],
+  allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  credentials: true,
+}));
 
 // OAuth endpoints
 app.get('/api/oauth/google/redirect_url', async (c) => {
@@ -68,100 +85,124 @@ app.get('/api/logout', async (c) => {
   return c.json({ success: true }, 200);
 });
 
-// Habits API endpoints
+// Habits endpoints
 app.get('/api/habits', authMiddleware, async (c) => {
-  const user = c.get('user');
-  if (!user) {
-    return c.json({ error: 'Unauthorized' }, 401);
-  }
+  const user = c.get("user");
   
-  const { results } = await c.env.DB.prepare(
-    "SELECT * FROM habits WHERE user_id = ? AND is_active = 1 ORDER BY created_at DESC"
-  )
-    .bind(user.id)
-    .all();
+  try {
+    const habits = await c.env.DB.prepare(`
+      SELECT * FROM habits 
+      WHERE user_id = ? AND is_active = 1 
+      ORDER BY created_at DESC
+    `).bind(user.id).all();
 
-  return c.json(results);
+    return c.json(habits.results || []);
+  } catch (error) {
+    console.error('Database error:', error);
+    return c.json({ error: 'Failed to fetch habits' }, 500);
+  }
 });
 
-app.post('/api/habits', authMiddleware, async (c) => {
-  const user = c.get('user');
-  if (!user) {
-    return c.json({ error: 'Unauthorized' }, 401);
-  }
-  const body = await c.req.json();
-
-  const { results } = await c.env.DB.prepare(
-    `INSERT INTO habits (user_id, name, category, description, target_frequency, target_amount, target_unit)
-     VALUES (?, ?, ?, ?, ?, ?, ?)
-     RETURNING *`
-  )
-    .bind(
+app.post('/api/habits', authMiddleware, zValidator('json', CreateHabitSchema), async (c) => {
+  const user = c.get("user");
+  const habitData = c.req.valid('json');
+  
+  try {
+    const result = await c.env.DB.prepare(`
+      INSERT INTO habits (user_id, name, category, description, target_frequency, target_amount, target_unit, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+    `).bind(
       user.id,
-      body.name,
-      body.category,
-      body.description || null,
-      body.target_frequency,
-      body.target_amount,
-      body.target_unit
-    )
-    .all();
+      habitData.name,
+      habitData.category,
+      habitData.description || null,
+      habitData.target_frequency,
+      habitData.target_amount,
+      habitData.target_unit
+    ).run();
 
-  return c.json(results[0]);
+    if (!result.success) {
+      throw new Error('Failed to create habit');
+    }
+
+    // Fetch the created habit
+    const habit = await c.env.DB.prepare(`
+      SELECT * FROM habits WHERE id = ?
+    `).bind(result.meta.last_row_id).first();
+
+    return c.json(habit);
+  } catch (error) {
+    console.error('Database error:', error);
+    return c.json({ error: 'Failed to create habit' }, 500);
+  }
 });
 
 app.get('/api/habits/:id/entries', authMiddleware, async (c) => {
-  const user = c.get('user');
-  if (!user) {
-    return c.json({ error: 'Unauthorized' }, 401);
-  }
+  const user = c.get("user");
   const habitId = c.req.param('id');
+  
+  try {
+    const entries = await c.env.DB.prepare(`
+      SELECT * FROM habit_entries 
+      WHERE habit_id = ? AND user_id = ? 
+      ORDER BY entry_date DESC
+    `).bind(habitId, user.id).all();
 
-  const { results } = await c.env.DB.prepare(
-    "SELECT * FROM habit_entries WHERE habit_id = ? AND user_id = ? ORDER BY entry_date DESC"
-  )
-    .bind(habitId, user.id)
-    .all();
-
-  return c.json(results);
+    return c.json(entries.results || []);
+  } catch (error) {
+    console.error('Database error:', error);
+    return c.json({ error: 'Failed to fetch entries' }, 500);
+  }
 });
 
-app.post('/api/habits/:id/entries', authMiddleware, async (c) => {
-  const user = c.get('user');
-  if (!user) {
-    return c.json({ error: 'Unauthorized' }, 401);
-  }
+app.post('/api/habits/:id/entries', authMiddleware, zValidator('json', CreateHabitEntrySchema), async (c) => {
+  const user = c.get("user");
   const habitId = c.req.param('id');
-  const body = await c.req.json();
+  const entryData = c.req.valid('json');
+  
+  try {
+    // Check if entry already exists for this date
+    const existingEntry = await c.env.DB.prepare(`
+      SELECT id FROM habit_entries 
+      WHERE habit_id = ? AND user_id = ? AND entry_date = ?
+    `).bind(habitId, user.id, entryData.entry_date).first();
 
-  // Check if entry already exists for this date
-  const existing = await c.env.DB.prepare(
-    "SELECT id FROM habit_entries WHERE habit_id = ? AND user_id = ? AND entry_date = ?"
-  )
-    .bind(habitId, user.id, body.entry_date)
-    .first();
+    let result;
+    if (existingEntry) {
+      // Update existing entry
+      result = await c.env.DB.prepare(`
+        UPDATE habit_entries 
+        SET amount = ?, notes = ?, updated_at = datetime('now')
+        WHERE id = ?
+      `).bind(entryData.amount, entryData.notes || null, existingEntry.id).run();
+    } else {
+      // Create new entry
+      result = await c.env.DB.prepare(`
+        INSERT INTO habit_entries (habit_id, user_id, entry_date, amount, notes, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+      `).bind(
+        habitId,
+        user.id,
+        entryData.entry_date,
+        entryData.amount,
+        entryData.notes || null
+      ).run();
+    }
 
-  if (existing) {
-    // Update existing entry
-    const { results } = await c.env.DB.prepare(
-      `UPDATE habit_entries SET amount = ?, notes = ?, updated_at = CURRENT_TIMESTAMP
-       WHERE id = ? RETURNING *`
-    )
-      .bind(body.amount, body.notes || null, existing.id)
-      .all();
+    if (!result.success) {
+      throw new Error('Failed to save entry');
+    }
 
-    return c.json(results[0]);
-  } else {
-    // Create new entry
-    const { results } = await c.env.DB.prepare(
-      `INSERT INTO habit_entries (habit_id, user_id, entry_date, amount, notes)
-       VALUES (?, ?, ?, ?, ?)
-       RETURNING *`
-    )
-      .bind(habitId, user.id, body.entry_date, body.amount, body.notes || null)
-      .all();
+    // Fetch the entry
+    const entryId = existingEntry ? existingEntry.id : result.meta.last_row_id;
+    const entry = await c.env.DB.prepare(`
+      SELECT * FROM habit_entries WHERE id = ?
+    `).bind(entryId).first();
 
-    return c.json(results[0]);
+    return c.json(entry);
+  } catch (error) {
+    console.error('Database error:', error);
+    return c.json({ error: 'Failed to save entry' }, 500);
   }
 });
 

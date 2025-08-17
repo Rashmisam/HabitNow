@@ -10,11 +10,29 @@ export function useHabits() {
     try {
       setIsLoading(true);
       const response = await fetch('/api/habits');
-      if (!response.ok) throw new Error('Failed to fetch habits');
+      
+      // Check content type first
+      const contentType = response.headers.get('content-type');
+      
+      if (!contentType || !contentType.includes('application/json')) {
+        console.warn('API route not properly configured - received non-JSON response');
+        setHabits([]);
+        setError('API not available in current environment');
+        return;
+      }
+      
       const data = await response.json();
+      
+      if (!response.ok) {
+        throw new Error(data.error || 'Failed to fetch habits');
+      }
+      
       setHabits(data);
       setError(null);
     } catch (err) {
+      console.error('Failed to fetch habits:', err);
+      // For now, set empty habits array if API is not available
+      setHabits([]);
       setError(err instanceof Error ? err.message : 'An error occurred');
     } finally {
       setIsLoading(false);
@@ -28,11 +46,24 @@ export function useHabits() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(habitData),
       });
-      if (!response.ok) throw new Error('Failed to create habit');
-      const newHabit = await response.json();
-      setHabits(prev => [newHabit, ...prev]);
-      return newHabit;
+      
+      // Check content type first
+      const contentType = response.headers.get('content-type');
+      
+      if (!contentType || !contentType.includes('application/json')) {
+        throw new Error('API not available in current environment');
+      }
+      
+      const data = await response.json();
+      
+      if (!response.ok) {
+        throw new Error(data.error || 'Failed to create habit');
+      }
+      
+      setHabits(prev => [data, ...prev]);
+      return data;
     } catch (err) {
+      console.error('Failed to create habit:', err);
       throw new Error(err instanceof Error ? err.message : 'Failed to create habit');
     }
   };
@@ -59,11 +90,29 @@ export function useHabitEntries(habitId: number) {
     try {
       setIsLoading(true);
       const response = await fetch(`/api/habits/${habitId}/entries`);
-      if (!response.ok) throw new Error('Failed to fetch entries');
+      
+      // Check content type first
+      const contentType = response.headers.get('content-type');
+      
+      if (!contentType || !contentType.includes('application/json')) {
+        console.warn('API route not properly configured - received non-JSON response');
+        setEntries([]);
+        setError('API not available in current environment');
+        return;
+      }
+      
       const data = await response.json();
+      
+      if (!response.ok) {
+        throw new Error(data.error || 'Failed to fetch entries');
+      }
+      
       setEntries(data);
       setError(null);
     } catch (err) {
+      console.error('Failed to fetch entries:', err);
+      // For now, set empty entries array if API is not available
+      setEntries([]);
       setError(err instanceof Error ? err.message : 'An error occurred');
     } finally {
       setIsLoading(false);
@@ -77,11 +126,24 @@ export function useHabitEntries(habitId: number) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(entryData),
       });
-      if (!response.ok) throw new Error('Failed to add entry');
-      const newEntry = await response.json();
-      setEntries(prev => [newEntry, ...prev.filter(e => e.entry_date !== entryData.entry_date)]);
-      return newEntry;
+      
+      // Check content type first
+      const contentType = response.headers.get('content-type');
+      
+      if (!contentType || !contentType.includes('application/json')) {
+        throw new Error('API not available in current environment');
+      }
+      
+      const data = await response.json();
+      
+      if (!response.ok) {
+        throw new Error(data.error || 'Failed to add entry');
+      }
+      
+      setEntries(prev => [data, ...prev.filter(e => e.entry_date !== entryData.entry_date)]);
+      return data;
     } catch (err) {
+      console.error('Failed to add entry:', err);
       throw new Error(err instanceof Error ? err.message : 'Failed to add entry');
     }
   };
