@@ -1,7 +1,7 @@
 {
   "functions": {
     "src/worker/index.ts": {
-      "runtime": "@vercel/edge@latest"
+      "runtime": "@vercel/edge@1.0.0"
     }
   },
   "rewrites": [
